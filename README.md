@@ -245,6 +245,20 @@ You should see:
 
 ```
 All operations mapped to Edge TPU
+
+Operator                       Count      Status
+
+ADD                            6          Mapped to Edge TPU
+SPLIT                          4          Mapped to Edge TPU
+MEAN                           1          Mapped to Edge TPU
+QUANTIZE                       2          Mapped to Edge TPU
+MUL                            26         Mapped to Edge TPU
+SOFTMAX                        1          Mapped to Edge TPU
+CONV_2D                        26         Mapped to Edge TPU
+LOGISTIC                       26         Mapped to Edge TPU
+CONCATENATION                  4          Mapped to Edge TPU
+PAD                            5          Mapped to Edge TPU
+FULLY_CONNECTED                1          Mapped to Edge TPU
 ```
 
 ---
