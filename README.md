@@ -22,7 +22,6 @@ Due to lack of native Linux support on local machine, conversion was performed o
 | RAM            | 32 GB                         |
 | Storage        | 200 GB                        |
 | OS             | Ubuntu 20.04.2 Server         |
-| Runtime Access | 9 days                        |
 
 ---
 
