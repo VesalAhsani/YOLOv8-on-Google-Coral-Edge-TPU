@@ -88,31 +88,58 @@ This will create a `saved_model/` directory for use in TFLite conversion.
 ```python
 import tensorflow as tf
 
-SAVED_MODEL_DIR = "saved_model"
-FLOAT32_TFLITE_PATH = "model_float32.tflite"
-FLOAT16_TFLITE_PATH = "model_float16.tflite"
-IMG_SIZE = 512
+# ──────────────────────────────────────────────────────────────────────────────
+# Config
+# ──────────────────────────────────────────────────────────────────────────────
+SAVED_MODEL_DIR       = "saved_model"           # your onnx2tf export
+FLOAT32_TFLITE_PATH   = "model_float32.tflite"
+FLOAT16_TFLITE_PATH   = "model_float16.tflite"
+IMG_SIZE              = 512                    # your input resolution
+# ──────────────────────────────────────────────────────────────────────────────
 
+
+# 1) Load the SavedModel
+print("🔄 Loading SavedModel…")
 loaded = tf.saved_model.load(SAVED_MODEL_DIR)
 
-@tf.function(input_signature=[tf.TensorSpec([1, IMG_SIZE, IMG_SIZE, 3], tf.float32)])
-def inference(images):
-    return loaded(images)
 
+# 2) Make a tf.function wrapper with a proper input signature
+@tf.function(
+    input_signature=[tf.TensorSpec([1, IMG_SIZE, IMG_SIZE, 3], tf.float32, name="images")]
+)
+def inference(images):
+    # The loaded object is callable
+    return loaded(images)  
+
+
+# 3) Grab the concrete function
+print("🔄 Tracing concrete function…")
 concrete_func = inference.get_concrete_function()
 
-# Float32
-converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete_func])
-tflite_model = converter.convert()
-with open(FLOAT32_TFLITE_PATH, "wb") as f:
-    f.write(tflite_model)
 
-# Float16
-converter.optimizations = [tf.lite.Optimize.DEFAULT]
-converter.target_spec.supported_types = [tf.float16]
-tflite_fp16 = converter.convert()
-with open(FLOAT16_TFLITE_PATH, "wb") as f:
-    f.write(tflite_fp16)
+def convert_float32():
+    print("➡️  Converting to float32 TFLite…")
+    converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete_func])
+    tflite_model = converter.convert()
+    with open(FLOAT32_TFLITE_PATH, "wb") as f:
+        f.write(tflite_model)
+    print(f"✅ Float32 model saved to {FLOAT32_TFLITE_PATH}")
+
+
+def convert_float16():
+    print("➡️  Converting to float16 TFLite…")
+    converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete_func])
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+    converter.target_spec.supported_types = [tf.float16]
+    tflite_fp16 = converter.convert()
+    with open(FLOAT16_TFLITE_PATH, "wb") as f:
+        f.write(tflite_fp16)
+    print(f"✅ Float16 model saved to {FLOAT16_TFLITE_PATH}")
+
+
+if __name__ == "__main__":
+    convert_float32()
+    convert_float16()
 ```
 
 ---
@@ -123,55 +150,77 @@ Use this Python script to quantize to full INT8:
 
 ```python
 import tensorflow as tf
-import yaml, random
+import yaml
+import pathlib
 import numpy as np
+import random
 from PIL import Image
-from pathlib import Path
 
+# ─── CONFIG ────────────────────────────────────────────────────────────────
 SAVED_MODEL_DIR = "saved_model"
-OUTPUT_TFLITE = "model_int8.tflite"
-IMG_SIZE = (512, 512)
-CALIB_SAMPLES = 500
+OUTPUT_TFLITE     = "model_int8.tflite"
+CALIB_SAMPLES     = 500    # total images to use for calibration
+IMG_SIZE          = (512, 512)
+# ────────────────────────────────────────────────────────────────────────────
 
+# 1) Load your SavedModel
 loaded = tf.saved_model.load(SAVED_MODEL_DIR)
 
+# 2) Wrap in a tf.function so we can get a ConcreteFunction
 @tf.function(input_signature=[tf.TensorSpec([1, *IMG_SIZE, 3], tf.float32)])
 def model_fn(x):
     return loaded(x)
 
 concrete_func = model_fn.get_concrete_function()
 
+# 3) Setup TFLiteConverter for full-int quant
 converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete_func])
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
 converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-converter.inference_input_type = tf.uint8
+converter.inference_input_type  = tf.uint8
 converter.inference_output_type = tf.uint8
 
-# Load YAML paths
+# 4) Build a balanced representative dataset
 with open("data_calib.yaml") as f:
     cfg = yaml.safe_load(f)
-calib_root = Path(cfg["train"])
+calib_root = pathlib.Path(cfg["train"])
+# get only subdirectories (one per class)
 class_dirs = [d for d in calib_root.iterdir() if d.is_dir()]
+
+if not class_dirs:
+    raise RuntimeError(f"No class subfolders found under {calib_root}")
+
+# how many per class
 per_class = max(1, CALIB_SAMPLES // len(class_dirs))
 
+# gather samples
 img_paths = []
 for d in class_dirs:
-    imgs = [p for p in d.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")]
-    if imgs:
-        img_paths += random.sample(imgs, min(per_class, len(imgs)))
+    imgs = [p for p in d.iterdir() if p.suffix.lower() in (".jpg",".jpeg",".png")]
+    if not imgs:
+        continue
+    chosen = random.sample(imgs, min(per_class, len(imgs)))
+    img_paths += chosen
+
+# if we came up short or long, trim or pad (optional)
+img_paths = img_paths[:CALIB_SAMPLES]
 
 def representative_dataset():
     for img_path in img_paths:
         img = Image.open(img_path).convert("RGB").resize(IMG_SIZE)
         arr = np.array(img, dtype=np.float32) / 255.0
+        # tflite expects [1, H, W, C]
         yield [np.expand_dims(arr, axis=0)]
 
 converter.representative_dataset = representative_dataset
 
-# Convert
-quant_model = converter.convert()
+# 5) Convert & save
+tflite_quant_model = converter.convert()
 with open(OUTPUT_TFLITE, "wb") as f:
-    f.write(quant_model)
+    f.write(tflite_quant_model)
+
+print(f"✅ {OUTPUT_TFLITE} generated successfully with {len(img_paths)} calibration images!")
+
 ```
 
 ---
